@@ -18,10 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- STARK INDUSTRIES CONFIGURATION MK XIII (FLUX ENGINE) ---
-# All secrets MUST be set as environment variables
-# For local dev: Create a .env file (see .env.example)
-# For Railway: Set these in the Railway dashboard
-
+# API Keys (required as environment variables)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable is required")
@@ -31,19 +28,20 @@ if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN environment variable is required")
 os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 
-WP_BASE_URL = os.getenv("WP_BASE_URL", "https://sarogenix.com")
-WP_USER = os.getenv("WP_USER", "administrator")
-WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD")
-if not WP_APP_PASSWORD:
-    raise ValueError("WP_APP_PASSWORD environment variable is required")
+# WordPress credentials are now received dynamically from webhook payload
+# This allows each WordPress site to authenticate with their own credentials
 # ------------------------------------------------------------
 
 app = FastAPI()
 client = OpenAI(api_key=OPENAI_API_KEY)
 rembg_session = new_session()
 
-def get_wp_headers(is_image_upload=False):
-    credentials = f"{WP_USER}:{WP_APP_PASSWORD}"
+def get_wp_headers(wp_username, wp_app_password, is_image_upload=False):
+    """
+    Generate WordPress API headers using credentials from webhook payload.
+    This allows each WordPress installation to use their own credentials.
+    """
+    credentials = f"{wp_username}:{wp_app_password}"
     token = base64.b64encode(credentials.encode())
     headers = {'Authorization': f'Basic {token.decode("utf-8")}'}
     if not is_image_upload:
@@ -181,13 +179,13 @@ Clean, high-end aesthetic matching {visual_analysis}.
         traceback.print_exc()
         return None
 
-def upload_raw_image(img_data, title):
+def upload_raw_image(img_data, title, wp_base_url, wp_username, wp_app_password):
     if not img_data:
         return None
     print(">> Uploading Masterpiece to WordPress...")
     filename = sanitize_filename(title)
-    url = f"{WP_BASE_URL}/wp-json/wp/v2/media"
-    headers = get_wp_headers(is_image_upload=True)
+    url = f"{wp_base_url}/wp-json/wp/v2/media"
+    headers = get_wp_headers(wp_username, wp_app_password, is_image_upload=True)
     headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     headers['Content-Type'] = 'image/png'
     response = requests.post(url, headers=headers, data=img_data)
@@ -298,10 +296,10 @@ BEGIN NOW. Output only the HTML."""
         print(f"Content Generation Error: {e}")
         return f"<div><h3>{product_name}</h3><p>{description}</p></div>"
 
-def post_final_draft(title, content, original_product_id, featured_image_id):
+def post_final_draft(title, content, original_product_id, featured_image_id, wp_base_url, wp_username, wp_app_password):
     print(">> Assembling Final Draft...")
-    url = f"{WP_BASE_URL}/wp-json/wp/v2/posts"
-    headers = get_wp_headers()
+    url = f"{wp_base_url}/wp-json/wp/v2/posts"
+    headers = get_wp_headers(wp_username, wp_app_password)
     post_data = {
         "title": f"Review: {title}",
         "content": content,
@@ -325,7 +323,7 @@ def post_final_draft(title, content, original_product_id, featured_image_id):
 async def receive_webhook(request: Request):
     data = await request.json()
     
-    # Extract all fields
+    # Extract product data
     p_id = data.get('post_id')
     title = data.get('post_title')
     desc = data.get('post_content')
@@ -345,12 +343,27 @@ async def receive_webhook(request: Request):
     founders = data.get('founders_name', 'The Team')
     about_brand = data.get('about_brand', '')
     
+    # WordPress credentials (sent from plugin settings)
+    wp_base_url = data.get('wp_base_url', '')
+    wp_username = data.get('wp_username', '')
+    wp_app_password = data.get('wp_app_password', '')
+    
+    # Validate WordPress credentials
+    if not wp_base_url or not wp_username or not wp_app_password:
+        print("ERROR: Missing WordPress credentials in webhook payload.")
+        print("Please configure WordPress API credentials in the plugin settings.")
+        return JSONResponse(
+            status_code=400, 
+            content={"status": "error", "message": "Missing WordPress credentials"}
+        )
+    
     price_info = f"Price: {price_display}"
     if regular_price and sale_price and regular_price != sale_price:
         price_info = f"Sale Price: {sale_price} (Regular: {regular_price})"
     
     print("\n" + "="*60)
     print(f"INITIATING MARK XIII (FLUX ENGINE) FOR: {brand} ({title})")
+    print(f"Target WordPress: {wp_base_url}")
     
     if img and title:
         # Phase 1: Visual Analysis (for background context)
@@ -359,8 +372,8 @@ async def receive_webhook(request: Request):
         # Phase 2: FLUX FILL PRO (100% Product Fidelity + New Background)
         thumbnail_bytes = generate_flux_masterpiece(img, title, visuals)
         
-        # Phase 3: Upload Thumbnail
-        media_id = upload_raw_image(thumbnail_bytes, title)
+        # Phase 3: Upload Thumbnail (using dynamic credentials)
+        media_id = upload_raw_image(thumbnail_bytes, title, wp_base_url, wp_username, wp_app_password)
         
         # Phase 4: Generate Premium HTML Article
         article_html = write_html_masterpiece(
@@ -368,8 +381,8 @@ async def receive_webhook(request: Request):
             link, img, attributes
         )
         
-        # Phase 5: Publish as Draft
-        post_final_draft(title, article_html, p_id, media_id)
+        # Phase 5: Publish as Draft (using dynamic credentials)
+        post_final_draft(title, article_html, p_id, media_id, wp_base_url, wp_username, wp_app_password)
         
     else:
         print("Error: Missing required data (image or title).")
