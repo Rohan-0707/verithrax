@@ -12,6 +12,7 @@ from io import BytesIO
 from rembg import remove, new_session
 import replicate
 from dotenv import load_dotenv
+import uuid
 
 # Load environment variables from .env file (for local development)
 # Railway will use environment variables directly
@@ -123,9 +124,14 @@ def generate_flux_masterpiece(original_image_url, product_name, visual_analysis)
 
         final_img, final_mask = fit_on_canvas(nobg_img, mask, target_w, target_h)
         
+        # Generate unique filenames to prevent race conditions with concurrent requests
+        unique_id = uuid.uuid4().hex
+        temp_source = f"temp_source_{unique_id}.png"
+        temp_mask = f"temp_mask_{unique_id}.png"
+        
         # Save temp files for API upload
-        final_img.save("temp_source.png")
-        final_mask.save("temp_mask.png")
+        final_img.save(temp_source)
+        final_mask.save(temp_mask)
 
         # 3. Call Replicate (Flux Fill Pro)
         print(">> Transmitting to Replicate (Black Forest Labs)...")
@@ -140,8 +146,8 @@ Clean, high-end aesthetic matching {visual_analysis}.
         output = replicate.run(
             "black-forest-labs/flux-fill-pro",
             input={
-                "image": open("temp_source.png", "rb"),
-                "mask": open("temp_mask.png", "rb"),
+                "image": open(temp_source, "rb"),
+                "mask": open(temp_mask, "rb"),
                 "prompt": prompt,
                 "guidance": 30,
                 "output_format": "png",
@@ -151,8 +157,8 @@ Clean, high-end aesthetic matching {visual_analysis}.
         )
         
         # Cleanup temp files
-        os.remove("temp_source.png")
-        os.remove("temp_mask.png")
+        os.remove(temp_source)
+        os.remove(temp_mask)
 
         print(f">> Flux Output Received")
         
